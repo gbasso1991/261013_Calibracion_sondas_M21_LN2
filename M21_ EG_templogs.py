@@ -14,22 +14,47 @@ pendiente_HvsI = 3716.3 # 1/m
 ordenada_HvsI = 1297.0 # A/m
 # from clase_resultados import ResultadosESAR
 #%% Lector Templog
-def lector_templog(path):
+def lector_templog(path, sincronizo_CH1_t=10, delta_T_min=0.8):
     '''
+    15 Oct 26
     Busca archivo *templog.csv en directorio especificado.
-    muestras = False plotea solo T(dt).
-    muestras = True plotea T(dt) con las muestras superpuestas
-    Retorna arrys timestamp,temperatura
+    Si sincronizo_CH1_t no es None, sincroniza la curva para que el punto
+    anterior al primer cambio de CH1 >= delta_T_min quede en t=sincronizo_CH1_t.
+    Recorta CH1 y CH2 con los mismos índices.
+    Retorna timestamp, time, temp_CH1, temp_CH2.
     '''
     data = pd.read_csv(path,sep=';',header=5,
-                            names=('Timestamp','T_CH1','T_CH2'),usecols=(0,1,2),
-                            decimal=',',engine='python')
-    temp_CH1  = pd.Series(data['T_CH1']).to_numpy(dtype=float)
-    temp_CH2  = pd.Series(data['T_CH2']).to_numpy(dtype=float)
+                       names=('Timestamp','T_CH1','T_CH2'),usecols=(0,1,2),
+                       decimal=',',engine='python')
+    temp_CH1 = pd.Series(data['T_CH1']).to_numpy(dtype=float)
+    temp_CH2 = pd.Series(data['T_CH2']).to_numpy(dtype=float)
     timestamp = np.array([datetime.strptime(date,'%Y/%m/%d %H:%M:%S') for date in data['Timestamp']])
-
     time = np.array([(t-timestamp[0]).total_seconds() for t in timestamp])
-    return timestamp,time,temp_CH1, temp_CH2
+
+    if sincronizo_CH1_t is not None:
+        indx_cambios = np.where(np.abs(np.diff(temp_CH1)) >= delta_T_min)[0]
+
+        if len(indx_cambios) == 0:
+            warnings.warn(f'{os.path.basename(path)}: CH1 no presenta cambios >= {delta_T_min:.1f} °C. No se sincroniza.')
+        else:
+            indx_anterior = indx_cambios[0]
+            t_anterior = time[indx_anterior]
+
+            if np.isclose(t_anterior, sincronizo_CH1_t):
+                warnings.warn(f'{os.path.basename(path)}: el punto anterior al primer cambio ya está en t={sincronizo_CH1_t:.1f} s. No hace falta recortar.')
+            elif t_anterior < sincronizo_CH1_t:
+                warnings.warn(f'{os.path.basename(path)}: el primer cambio ocurre demasiado pronto; el punto anterior está en t={t_anterior:.1f} s, antes de los {sincronizo_CH1_t:.1f} s solicitados. No se sincroniza mediante recorte.')
+            else:
+                tiempo_a_recortar = t_anterior - sincronizo_CH1_t
+                indx_inicio = np.searchsorted(time, tiempo_a_recortar, side='left')
+                segundos_recortados = time[indx_inicio]
+                timestamp = timestamp[indx_inicio:]
+                time = time[indx_inicio:] - tiempo_a_recortar
+                temp_CH1 = temp_CH1[indx_inicio:]
+                temp_CH2 = temp_CH2[indx_inicio:]
+                print(f'{os.path.basename(path)}: recortados {segundos_recortados:.1f} s del comienzo; punto anterior al cambio en t={time[indx_anterior-indx_inicio]:.1f} s.')
+
+    return timestamp, time, temp_CH1, temp_CH2
 #%% Curvatura
 def curvatura(T):
     ancho_de_ventana=11
@@ -294,71 +319,77 @@ plt.suptitle(titulo_4)
 
 
 
-#%% Comparo mejor enrfriamiento/calentamiento para cada campo
-labels = [f'{H0[i]:.1f} kA/m' for i in range(len(H0))]
+#%% Comparo enfriamiento/calentamiento para cada campo - M21
+labels = [f'{h:.1f}' for h in H0]
+paths_300kHz = [temps_150,temps_125,temps_100,temps_075]
 
-def separa_enfriamiento_calentamiento(t, T):
-    i_min = np.argmin(T)
-    t_min = t[i_min]
+def separa_enfriamiento_calentamiento(t,T_C,T_B,delta_T_salto=0.8,tiempo_previo=5):
+    # Enfriamiento: desde el inicio hasta el mínimo de cada canal
+    i_min_C = np.argmin(T_C)
+    i_min_B = np.argmin(T_B)
+    t_enf_C = t[:i_min_C+1] - t[0]
+    T_enf_C = T_C[:i_min_C+1]
+    t_enf_B = t[:i_min_B+1] - t[0]
+    T_enf_B = T_B[:i_min_B+1]
+    # Calentamiento: detectar el primer salto positivo de CH1 posterior al mínimo
+    candidatos = np.where((np.diff(T_C) >= delta_T_salto) & (np.arange(len(T_C)-1) >= i_min_C))[0]
+    if len(candidatos) == 0:
+        warnings.warn('No se encontró un salto positivo en CH1 de al menos '
+                      f'{delta_T_salto:.1f} °C después del mínimo. Se omite el calentamiento.')
+        t_cal_C = T_cal_C = t_cal_B = T_cal_B = None
+    else:
+        i_salto = candidatos[0]
+        t_salto = t[i_salto]
+        i_inicio = np.searchsorted(t,t_salto-tiempo_previo,side='left')
+        t_cal_C = t[i_inicio:] - t_salto
+        T_cal_C = T_C[i_inicio:]
+        t_cal_B = t[i_inicio:] - t_salto
+        T_cal_B = T_B[i_inicio:]
+        print(f'Salto CH1: ΔT = {T_C[i_salto+1]-T_C[i_salto]:.2f} °C; '
+              f't salto = {t_salto:.1f} s; '
+              f'inicio del calentamiento = {t[i_inicio]:.1f} s; '
+              f'tiempo previo conservado = {t_salto-t[i_inicio]:.1f} s')
+    return (t_enf_C,T_enf_C),(t_enf_B,T_enf_B),(t_cal_C,T_cal_C),(t_cal_B,T_cal_B)
 
-    # Enfriamiento
-    t_enf = t[:i_min + 1] - t_min
-    T_enf = T[:i_min + 1]
-
-    # Calentamiento
-    t_cal = t[i_min:] - t_min
-    T_cal = T[i_min:]
-
-    return (t_enf, T_enf), (t_cal, T_cal)
-
-#%% Enfriamiento Centro y Borde
-paths_300kHz = [temps_150[0],temps_125[0],temps_100[0],temps_075[0]]
-
-fig_enf, (ax,bx)= plt.subplots(2,1,figsize=(9,6),constrained_layout=True,sharex=True)
-for i,p in enumerate(paths_300kHz):
-    _, time, temp_C, temp_B = lector_templog(p)
-
-    (t_enf_C, T_enf_C), _ = separa_enfriamiento_calentamiento(time, temp_C)
-    (t_enf_B, T_enf_B), _ = separa_enfriamiento_calentamiento(time, temp_B)
-
-    label = f'{H0[paths_300kHz.index(p)]:.1f}'
-
-    ax.plot(t_enf_C, T_enf_C, '-', label=labels[paths_300kHz.index(p)])
-
-    bx.plot(t_enf_B, T_enf_B, '-',label=labels[paths_300kHz.index(p)])
-
-ax.set_title('Centro',loc='left')
-bx.set_title('Borde',loc='left')
-
-bx.set_xlabel('t (s)')
+#%% Enfriamiento Centro y Borde - M21
+fig_enf,(ax,bx) = plt.subplots(2,1,figsize=(9,6),constrained_layout=True,sharex=True)
+for i,paths in enumerate(paths_300kHz):
+    for j,p in enumerate(paths):
+        _,time,temp_C,temp_B = lector_templog(p)
+        (t_enf_C,T_enf_C),(t_enf_B,T_enf_B),_,_ = separa_enfriamiento_calentamiento(time,temp_C,temp_B)
+        label = f'{labels[i]} kA/m - medida {j+1}'
+        ax.plot(t_enf_C,T_enf_C,'-',label=label)
+        bx.plot(t_enf_B,T_enf_B,'-',label=label)
+ax.set_title('Centro (CH1)',loc='left')
+bx.set_title('Borde (CH2)',loc='left')
+bx.set_xlabel('t desde el inicio de la curva (s)')
+bx.set_xlim(0,120)
 for a in (ax,bx):
     a.grid()
-    a.legend(title=f'H$_0$ (kA/m)',loc='best',shadow=True,frameon=True,ncol=3)
+    a.legend(title='H₀ - repetición',loc='best',shadow=True,frameon=True,ncol=2)
     a.set_ylabel('T (°C)')
-plt.suptitle('EG51% + FF49%\nEnfriamiento LN2')
-#%%Calentamiento Centro y Borde
-fig_cal, (ax,bx)= plt.subplots(2,1,figsize=(9,6),constrained_layout=True,sharex=True)
-for i,p in enumerate(paths_300kHz):
-    _, time, temp_B, temp_C = lector_templog(p)
+plt.suptitle('M21 - EG51% + FF49%\nEnfriamiento LN₂')
 
-    _,(t_cal_C, T_cal_C) = separa_enfriamiento_calentamiento(time, temp_C)
-    _,(t_cal_B, T_cal_B) = separa_enfriamiento_calentamiento(time, temp_B)
-
-    ax.plot(t_cal_C, T_cal_C, '-', label=labels[paths_300kHz.index(p)])
-
-    bx.plot(t_cal_B, T_cal_B, '-',label=labels[paths_300kHz.index(p)])
-
-ax.set_title('Centro',loc='left')
-bx.set_title('Borde',loc='left')
-
-bx.set_xlabel('t (s)')
-bx.set_xlim(0,350)
+#%% Calentamiento Centro y Borde - M21
+fig_cal,(ax,bx) = plt.subplots(2,1,figsize=(9,6),constrained_layout=True,sharex=True)
+for i,paths in enumerate(paths_300kHz):
+    for j,p in enumerate(paths):
+        _,time,temp_C,temp_B = lector_templog(p)
+        _,_,(t_cal_C,T_cal_C),(t_cal_B,T_cal_B) = separa_enfriamiento_calentamiento(time,temp_C,temp_B)
+        if t_cal_C is None:
+            continue
+        label = f'{labels[i]} kA/m - medida {j+1}'
+        ax.plot(t_cal_C,T_cal_C,'-',label=label)
+        bx.plot(t_cal_B,T_cal_B,'-',label=label)
+ax.set_title('Centro (CH1)',loc='left')
+bx.set_title('Borde (CH2)',loc='left')
+bx.set_xlabel('t respecto al salto de calentamiento (s)')
+bx.set_xlim(-5,350)
 for a in (ax,bx):
     a.grid()
-    a.legend(title=f'H$_0$ (kA/m)',loc='best',shadow=True,frameon=True,ncol=3)
+    a.legend(title='H₀ - repetición',loc='best',shadow=True,frameon=True,ncol=2)
     a.set_ylabel('T (°C)')
-plt.suptitle('EG51% + FF49%\nCalentamiento RF')
-
+plt.suptitle('M21 - EG51% + FF49%\nCalentamiento RF')
 
 #%% Curvatura
 fig1,(ax,ax2,ax3) = plt.subplots(3,1,figsize=(10,10),constrained_layout=True)
