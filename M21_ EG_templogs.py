@@ -702,6 +702,6 @@ fig42.savefig('EG51_FF49_LN2_300kHz_075dA_2',dpi=300)
 fig_enf.savefig('EG51_FF49_LN2_300kHz_Enfriamiento',dpi=300)
 fig_cal.savefig('EG51_FF49_LN2_300kHz_Calentamiento',dpi=300)
 fig_curv_sin_TF.savefig('EG51_FF49_LN2_300kHz_Curvatura_sin_TF',dpi=300)
-fig_curv_con_TF('EG51_FF49_LN2_300kHz_Curvatura_con_TF',dpi=300)
+fig_curv_con_TF.savefig('EG51_FF49_LN2_300kHz_Curvatura_con_TF',dpi=300)
 
 # %%
